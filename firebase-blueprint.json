@@ -1,0 +1,74 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Bookmark": {
+      "title": "Bookmark",
+      "description": "A bookmarked manhwa for a user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "mangaId": { "type": "string" },
+        "title": { "type": "string" },
+        "coverUrl": { "type": "string" },
+        "addedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "mangaId"]
+    },
+    "ReadingProgress": {
+      "title": "ReadingProgress",
+      "description": "Tracking user's progress in a manhwa",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "mangaId": { "type": "string" },
+        "lastChapterId": { "type": "string" },
+        "lastChapterNumber": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "mangaId"]
+    },
+    "MangaSearchCache": {
+      "title": "MangaSearchCache",
+      "description": "Caches the mapping between different sources",
+      "type": "object",
+      "properties": {
+        "mangaDexId": { "type": "string" },
+        "mangahereId": { "type": "string" },
+        "mangahereDomain": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["mangaDexId", "mangahereId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "/bookmarks/{bookmarkId}": {
+      "schema": "Bookmark",
+      "description": "User bookmarks"
+    },
+    "/progress/{progressId}": {
+      "schema": "ReadingProgress",
+      "description": "User reading progress"
+    },
+    "/search_cache/{mangaDexId}": {
+      "schema": "MangaSearchCache",
+      "description": "Mapping cache for third party sources"
+    }
+  }
+}
