@@ -205,6 +205,8 @@ export const mangahereService = {
     ])).filter(Boolean) as string[];
 
     const cleanId = mangaId.replace(/\/$/, '');
+    let bestChapters: Chapter[] = [];
+    let bestDomain = '';
 
     for (const domain of domains) {
       try {
@@ -288,11 +290,23 @@ export const mangahereService = {
 
         if (allChapters.length > 0) {
           console.log(`[MangaHere] Total chapters found: ${allChapters.length} on ${domain}`);
-          return allChapters.sort((a, b) => {
+          const sortedChapters = allChapters.sort((a, b) => {
             const aNum = parseFloat(a.chapter);
             const bNum = parseFloat(b.chapter);
             return isNaN(aNum) || isNaN(bNum) ? 0 : bNum - aNum;
           });
+
+          if (sortedChapters.length > bestChapters.length) {
+            bestChapters = sortedChapters;
+            bestDomain = domain;
+          }
+
+          if (sortedChapters.length >= 50) {
+            return sortedChapters;
+          }
+
+          console.log(`[MangaHere] Only ${sortedChapters.length} chapters found on ${domain}; checking other MangaHere domains before choosing.`);
+          continue;
         }
 
         console.warn(`[MangaHere] No chapters found on ${domain} for ${cleanId}. HTML size: ${firstHtml.length}`);
@@ -300,6 +314,12 @@ export const mangahereService = {
         console.warn(`[MangaHere] Chapters failed on ${domain}:`, error.message);
       }
     }
+
+    if (bestChapters.length > 0) {
+      console.log(`[MangaHere] Using best chapter list: ${bestChapters.length} chapters from ${bestDomain}`);
+      return bestChapters;
+    }
+
     return [];
   },
 
