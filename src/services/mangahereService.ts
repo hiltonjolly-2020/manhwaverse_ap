@@ -328,22 +328,10 @@ export const mangahereService = {
           } catch (e) {}
         }
 
-        // --- Method 3: Direct CDN image tags in HTML ---
-        const cdnImgRegex = /<img[^>]+(?:src|data-src)="(https?:\/\/(?:[^"]*(?:mfcdn|dmimg|mangahere)[^"]*\.(?:jpg|jpeg|png|webp|gif)(?:\?[^"]*)?))"/gi;
-        const directImages: string[] = [];
-        let imgMatch;
-        while ((imgMatch = cdnImgRegex.exec(html)) !== null) {
-          const url = imgMatch[1];
-          if (!directImages.includes(url)) directImages.push(url);
-        }
-        if (directImages.length > 0) {
-          console.log(`[MangaHere] Found ${directImages.length} direct CDN images`);
-          return directImages.map(url =>
-            `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(`https://${domain}/`)}`
-          );
-        }
-
-        // --- Method 4: Fall back to per-page proxy using total_pages count ---
+        // --- Method 3: Per-page proxy using total_pages count (reliable fallback) ---
+        // NOTE: Do NOT scan raw CDN <img> tags here — the page contains
+        // recommendation thumbnails and banners from completely different manga
+        // that would show up as false positives.
         const pageMatch =
           html.match(/total_pages\s*=\s*(\d+)/) ||
           html.match(/var\s+image_count\s*=\s*(\d+)/) ||
@@ -353,7 +341,7 @@ export const mangahereService = {
         const totalPages = pageMatch ? parseInt(pageMatch[1]) : 0;
 
         if (totalPages > 0) {
-          console.log(`[MangaHere] Using per-page proxy for ${totalPages} pages`);
+          console.log(`[MangaHere] Using per-page proxy for ${totalPages} pages on ${domain}`);
           const pages: string[] = [];
           for (let i = 1; i <= totalPages; i++) {
             pages.push(`/api/proxy-mangahere-image?domain=${domain}&mangaId=${mangaId}&chapterId=${chapterId}&page=${i}`);
@@ -361,7 +349,13 @@ export const mangahereService = {
           return pages;
         }
 
-        console.warn(`[MangaHere] Could not determine pages for ${mangaId} ch${chapterId} on ${domain}`);
+        // Log a diagnostic snippet to help debug if nothing worked
+        const scriptSnippet = (html.match(/<script[\s\S]*?<\/script>/gi) || [])
+          .map(s => s.substring(0, 300))
+          .filter(s => s.includes('img') || s.includes('page') || s.includes('list'))
+          .slice(0, 2)
+          .join('\n---\n');
+        console.warn(`[MangaHere] Could not determine pages for ${mangaId} ch${chapterId} on ${domain}. HTML: ${html.length} bytes. Script hints:\n${scriptSnippet}`);
       } catch (error: any) {
         console.warn(`[MangaHere] Pages failed on ${domain}:`, error.message);
       }
