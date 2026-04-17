@@ -34,9 +34,75 @@ const USER_AGENTS = [
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1'
 ];
 
+const ALLOWED_PROXY_HOSTS = new Set([
+  'api.mangadex.org',
+  'uploads.mangadex.org',
+  'www.mangahere.cc',
+  'm.mangahere.cc',
+  'newm.mangahere.cc',
+  'api.comick.io',
+  'api.comick.fun',
+  'api.comick.ink',
+  'api.comick.app',
+  'api.comick.xyz',
+  'meo.comick.pictures',
+  'www.manga4life.com',
+  'www.mangasee123.com',
+  'weebcentral.com',
+  'asuracomic.net',
+  'asuratoon.com',
+  'flamecomics.xyz',
+  'zeroscans.com',
+  'luminousscans.net',
+  'luminouscomics.org',
+  'omegascans.org',
+  'reaperscans.com',
+  'immortalupdates.com',
+  'theblank.net'
+]);
+
+const ALLOWED_CDN_MARKERS = ['mfcdn', 'dmimg', 'mangahere', 'mhcdn', 'fanfox', 'zjcdn', 'fmcdn'];
+
+function isPrivateHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '::1' || host === '[::1]' || host === '0.0.0.0') return true;
+  const parts = host.split('.').map(Number);
+  if (parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+    const [a, b] = parts;
+    return a === 10 || a === 127 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  return false;
+}
+
+function normalizeAllowedHost(host: string): string | null {
+  if (!host || /[\/\\@:%\s]/.test(host)) return null;
+  const hostname = host.toLowerCase();
+  if (isPrivateHostname(hostname)) return null;
+  if (ALLOWED_PROXY_HOSTS.has(hostname) || ALLOWED_CDN_MARKERS.some((marker) => hostname.includes(marker))) return hostname;
+  return null;
+}
+
+function parseAllowedHttpsUrl(rawUrl: string): URL | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return null;
+    if (!normalizeAllowedHost(parsed.hostname)) return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function safeReferer(rawReferer: string | undefined, fallback: string): string {
+  if (!rawReferer) return fallback;
+  const parsed = parseAllowedHttpsUrl(rawReferer);
+  return parsed ? parsed.toString() : fallback;
+}
+
 async function startServer() {
   const app = express();
-  const PORT = 5000;
+  const PORT = Number(process.env.PORT) || 5000;
 
   // Proxy for MangaDex API to avoid CORS issues
   app.get('/api/mangadex/*', async (req, res) => {
@@ -79,7 +145,8 @@ async function startServer() {
     const { domain, mangaId, chapterId, page } = req.query;
     if (!mangaId || !chapterId) return res.status(400).send('Missing params');
 
-    const domainStr = (domain as string) || 'www.mangahere.cc';
+    const domainStr = normalizeAllowedHost((domain as string) || 'www.mangahere.cc');
+    if (!domainStr || !domainStr.includes('mangahere')) return res.status(403).send('Domain not allowed');
     const pageNum = page || 1;
     const targetUrl = `https://${domainStr}/manga/${mangaId}/c${chapterId}/${pageNum}.html`;
     const referer = `https://${domainStr}/manga/${mangaId}/c${chapterId}/`;
@@ -302,12 +369,13 @@ async function startServer() {
     const imageUrl = req.query.url as string;
     const customReferer = req.query.referer as string | undefined;
     if (!imageUrl) return res.status(400).send('URL is required');
+    const parsedImageUrl = parseAllowedHttpsUrl(imageUrl);
+    if (!parsedImageUrl) return res.status(403).send('URL host not allowed');
 
-    // Determine the right referer: use custom if provided, otherwise infer from the URL host
-    let referer = customReferer || 'https://mangadex.org/';
+    let referer = safeReferer(customReferer, 'https://mangadex.org/');
     if (!customReferer) {
       try {
-        const urlHost = new URL(imageUrl).origin;
+        const urlHost = parsedImageUrl.origin;
         if (imageUrl.includes('mfcdn') || imageUrl.includes('dmimg') || imageUrl.includes('mangahere')) {
           referer = 'https://www.mangahere.cc/';
         } else {
@@ -348,7 +416,8 @@ async function startServer() {
 
   // Generic Proxy for other sources
   app.all('/api/proxy/:domain/*', async (req, res) => {
-    const domain = req.params.domain;
+    const domain = normalizeAllowedHost(req.params.domain);
+    if (!domain) return res.status(403).json({ error: 'Domain not allowed' });
     const path = req.params[0] || '';
     const targetUrl = `https://${domain}/${path}`;
     
@@ -412,7 +481,7 @@ async function startServer() {
       }
     }
     
-    if (req.query.referer) referer = req.query.referer as string;
+    if (req.query.referer) referer = safeReferer(req.query.referer as string, referer);
 
     console.log(`[PROXY] Generic ${req.method} Request: ${targetUrl} | Referer: ${referer}`);
 

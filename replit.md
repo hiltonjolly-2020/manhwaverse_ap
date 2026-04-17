@@ -33,6 +33,13 @@ A comprehensive Manga and Manhwa reader web application that aggregates content 
 - **Build:** `npm run build` — builds the React frontend to `dist/`
 - **Production:** `npx tsx server.ts` with `NODE_ENV=production` — serves built files
 
+## Replit Migration Notes
+
+- The app runs through the `Start application` workflow on port 5000.
+- Vite is configured for Replit preview compatibility with `host: '0.0.0.0'` and `allowedHosts: true`.
+- Server-side proxy routes validate outbound hosts so the browser cannot trigger arbitrary internal or third-party requests.
+- Server secrets are not injected into the client bundle.
+
 ## Key Features
 
 - Multi-source manga aggregation with orchestrator pattern
@@ -52,7 +59,7 @@ MangaHere mobile site (`newm.mangahere.cc`) uses P.A.C.K.E.R obfuscation for cha
 
 ## Environment Variables
 
-- `GEMINI_API_KEY` — Google Gemini API key for AI features
+- `GEMINI_API_KEY` — Google Gemini API key for server-side AI features
 - `APP_URL` — The hosted URL of the app
 
 ## Ports
