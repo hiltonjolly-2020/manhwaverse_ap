@@ -18,7 +18,7 @@ const USER_AGENTS = [
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = 5000;
 
   // Proxy for MangaDex API to avoid CORS issues
   app.get('/api/mangadex/*', async (req, res) => {
