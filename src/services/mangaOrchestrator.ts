@@ -1,7 +1,7 @@
 import { mangaService, Chapter } from './mangaService';
 import { mangahereService, MangaHereResult } from './mangahereService';
 import { db, auth } from '@/lib/firebase';
-import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 // Score a search result against the list of known titles for this manga.
 // Returns a score 0–100. A score below 55 means the result is likely a different series.
@@ -148,13 +148,9 @@ export const mangaOrchestrator = {
             }];
           }
         } else {
-          // Cache entry is stale or incorrect — delete it so a fresh search runs below.
-          console.warn(`[Orchestrator] Cache invalid (score ${cacheScore} < 55), deleting stale entry for ${mangaDexId}`);
-          try {
-            await deleteDoc(cacheRef);
-          } catch (e) {
-            console.warn('[Orchestrator] Failed to delete stale cache entry:', e);
-          }
+          // Cache entry is stale or incorrect — skip it and fall through to a fresh search.
+          // A correct entry will be written once the search succeeds (overwriting the bad one).
+          console.warn(`[Orchestrator] Cache invalid (score ${cacheScore} < 55), ignoring stale entry for ${mangaDexId}`);
         }
       }
     } catch (e) {
@@ -168,15 +164,35 @@ export const mangaOrchestrator = {
         name: 'MangaHere',
         key: 'mangahere',
         fetch: async () => {
-          // Prepare search variations: full titles first, then partial words
-          const searchTitles = [...allTitles];
-          if (allTitles[0]) {
-            const words = allTitles[0].split(/\s+/).filter(w => w.length >= 2);
-            if (words.length > 2) searchTitles.push(words[0] + ' ' + words[1] + ' ' + words[2]);
-            if (words.length > 1) searchTitles.push(words[0] + ' ' + words[1]);
+          // Build a SHORT, ranked list of search candidates.
+          // MangaHere search only works with Latin/ASCII titles — skip CJK, Arabic, Cyrillic, etc.
+          const isLatinTitle = (t: string) => /^[\x20-\x7E\u00C0-\u024F'-]+$/.test(t.trim());
+
+          // Collect only Latin-script titles, de-duplicated, max 5
+          const latinTitles = allTitles.filter(isLatinTitle).slice(0, 5);
+
+          // Always try the primary title first (even if non-Latin, use as seed for word slices)
+          const primary = allTitles[0] || '';
+          const searchTitles: string[] = latinTitles.length > 0 ? latinTitles : [];
+
+          // Add short word-slice fallbacks from the first Latin title
+          const firstLatin = latinTitles[0] || (isLatinTitle(primary) ? primary : '');
+          if (firstLatin) {
+            const words = firstLatin.split(/\s+/).filter(w => w.length >= 2);
+            if (words.length > 3) searchTitles.push(words.slice(0, 3).join(' '));
+            if (words.length > 2) searchTitles.push(words.slice(0, 2).join(' '));
           }
 
-          for (const title of searchTitles) {
+          // De-duplicate while keeping order
+          const seen = new Set<string>();
+          const uniqueTitles = searchTitles.filter(t => {
+            const key = t.toLowerCase().trim();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+
+          for (const title of uniqueTitles) {
             try {
               console.log(`[Orchestrator] Trying MangaHere search for: "${title}"`);
               const search = await mangahereService.searchManga(title);

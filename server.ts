@@ -151,12 +151,6 @@ async function startServer() {
         }
       }
 
-      // Pattern 3: Scan raw HTML itself for CDN URLs (covers inline <script> blocks)
-      if (!imageUrl) {
-        const rawCdnUrls = extractCdnUrls(html);
-        if (rawCdnUrls[idx]) imageUrl = rawCdnUrls[idx];
-      }
-
       // Pattern 4: <img id="image"> tag — MangaHere desktop reader element
       if (!imageUrl) {
         const imgTagMatch = html.match(/<img[^>]+id=["']image["'][^>]+src=["']([^"']+)["']/) ||

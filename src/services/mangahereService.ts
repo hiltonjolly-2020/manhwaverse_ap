@@ -401,17 +401,6 @@ export const mangahereService = {
           }
         }
 
-        // --- Method 2b: Scan raw HTML for CDN URLs in inline <script> blocks ---
-        const rawCdnUrls = extractImgUrlsFromUnpacked(html)
-          .filter(u => u.length > 10)
-          .map(u => u.startsWith('//') ? `https:${u}` : u);
-        if (rawCdnUrls.length > 0) {
-          console.log(`[MangaHere] Found ${rawCdnUrls.length} CDN URLs in raw HTML on ${domain}`);
-          return rawCdnUrls.map(url =>
-            `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
-          );
-        }
-
         // --- Method 3: Per-page proxy using imagecount (reliable last resort) ---
         const pageMatch =
           html.match(/var\s+imagecount\s*=\s*(\d+)/) ||
