@@ -301,11 +301,7 @@ export const mangahereService = {
             bestDomain = domain;
           }
 
-          if (sortedChapters.length >= 50) {
-            return sortedChapters;
-          }
-
-          console.log(`[MangaHere] Only ${sortedChapters.length} chapters found on ${domain}; checking other MangaHere domains before choosing.`);
+          console.log(`[MangaHere] Checking other MangaHere domains before choosing. Current best: ${bestChapters.length} chapters from ${bestDomain || domain}.`);
           continue;
         }
 
