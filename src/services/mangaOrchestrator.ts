@@ -1,7 +1,69 @@
 import { mangaService, Chapter } from './mangaService';
-import { mangahereService } from './mangahereService';
+import { mangahereService, MangaHereResult } from './mangahereService';
 import { db, auth } from '@/lib/firebase';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+
+// Score a search result against the list of known titles for this manga.
+// Returns a score 0–100. A score below 50 means the result is likely a different series.
+function scoreTitleMatch(result: MangaHereResult, knownTitles: string[]): number {
+  const resultNorm = result.title.toLowerCase().replace(/[^\w\s]/g, '').trim();
+  let best = 0;
+
+  for (const t of knownTitles) {
+    const targetNorm = t.toLowerCase().replace(/[^\w\s]/g, '').trim();
+
+    // Exact match
+    if (resultNorm === targetNorm) return 100;
+
+    // Result title starts with our title followed by separator (e.g. "solo leveling ragnarok")
+    // This means it's a sequel/variant — penalise relative to an exact match but keep it low.
+    if (resultNorm.startsWith(targetNorm + ' ') || resultNorm.startsWith(targetNorm + ':')) {
+      best = Math.max(best, 40);
+      continue;
+    }
+
+    // Our title starts with the result title (result is a substring of ours)
+    if (targetNorm.startsWith(resultNorm + ' ') || targetNorm === resultNorm) {
+      best = Math.max(best, 85);
+      continue;
+    }
+
+    // Bidirectional inclusion (not a prefix case)
+    if (targetNorm.includes(resultNorm) || resultNorm.includes(targetNorm)) {
+      best = Math.max(best, 60);
+      continue;
+    }
+
+    // All query words present in result (loose match)
+    const targetWords = targetNorm.split(/\s+/).filter(w => w.length > 2);
+    if (targetWords.length > 0 && targetWords.every(w => resultNorm.includes(w))) {
+      best = Math.max(best, 55);
+    }
+  }
+
+  return best;
+}
+
+// Pick the best match from MangaHere search results.
+// Returns null if no result meets the minimum confidence threshold.
+function pickBestMatch(results: MangaHereResult[], knownTitles: string[]): MangaHereResult | null {
+  const MIN_SCORE = 55;
+  let bestResult: MangaHereResult | null = null;
+  let bestScore = 0;
+
+  for (const r of results) {
+    const score = scoreTitleMatch(r, knownTitles);
+    console.log(`[Orchestrator] Title match score for "${r.title}": ${score}`);
+    if (score > bestScore) {
+      bestScore = score;
+      bestResult = r;
+    }
+  }
+
+  if (bestScore >= MIN_SCORE) return bestResult;
+  console.warn(`[Orchestrator] No result met minimum score (${MIN_SCORE}). Best was ${bestScore} for "${bestResult?.title}"`);
+  return null;
+}
 
 export interface SourceData {
   sourceName: string;
@@ -100,15 +162,12 @@ export const mangaOrchestrator = {
               const search = await mangahereService.searchManga(title);
               
               if (search.length > 0) {
-                // Try to find the best match for ANY of our known titles
-                const bestMatch = search.find(r => {
-                  const resultTitle = r.title.toLowerCase();
-                  return allTitles.some(t => {
-                    const target = t.toLowerCase();
-                    return resultTitle.includes(target) || target.includes(resultTitle);
-                  });
-                }) || search[0];
-                
+                const bestMatch = pickBestMatch(search, allTitles);
+                if (!bestMatch) {
+                  console.warn(`[Orchestrator] Skipping search results for "${title}" — no confident title match found.`);
+                  continue;
+                }
+
                 const id = bestMatch.id;
                 console.log(`[Orchestrator] Found on MangaHere: ${id} (${bestMatch.title}) on ${bestMatch.foundOn}`);
                 

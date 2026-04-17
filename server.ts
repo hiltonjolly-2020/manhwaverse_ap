@@ -105,18 +105,20 @@ async function startServer() {
       const idx = Math.max(0, parseInt(pageNum as string) - 1);
       let imageUrl = '';
 
-      // Pattern 1: Decode P.A.C.K.E.R block → extract newImgs[pageIndex]
-      // MangaHere mobile packs ALL page URLs into one eval'd block on page 1 only.
-      // Each individual page also contains the same packed block so we can extract
-      // the specific image for this page number.
+      // Pattern 1: Decode P.A.C.K.E.R block → extract image URLs by CDN domain
+      // After decoding we search for any known MangaHere CDN URL, regardless of variable name.
       const unpacked = depackPACKER(html);
-      if (unpacked && (/var\s+newImgs\s*=/.test(unpacked) || /newImgs\s*=/.test(unpacked))) {
-        // Extract URLs — decoded JS has \' escape sequences, so exclude backslash from capture
-        const urlPattern = /['"\\]([^'"\\]*mangahere[^'"\\]*\.(?:jpg|jpeg|png|webp|gif)[^'"\\]*)['"\\]/gi;
+      if (unpacked) {
+        const cdnAlt = ['mfcdn', 'dmimg', 'mangahere', 'mhcdn', 'fanfox'].join('|');
+        const urlPattern = new RegExp(
+          `['"\\\\]([^'"\\\\]*(?:${cdnAlt})[^'"\\\\]*\\.(?:jpg|jpeg|png|webp|gif)[^'"\\\\]*)['"\\\\]`,
+          'gi'
+        );
         const imgUrls: string[] = [];
         let mm: RegExpExecArray | null;
         while ((mm = urlPattern.exec(unpacked)) !== null) imgUrls.push(mm[1]);
-        if (imgUrls[idx]) imageUrl = imgUrls[idx];
+        const cleaned = imgUrls.map(u => u.replace(/\\+$/, ''));
+        if (cleaned[idx]) imageUrl = cleaned[idx];
       }
 
       // Pattern 2: Plain newImgList (desktop site fallback)
