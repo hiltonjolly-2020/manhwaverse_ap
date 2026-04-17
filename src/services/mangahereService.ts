@@ -344,25 +344,42 @@ export const mangahereService = {
 
         const refererUrl = `https://${domain}/manga/${mangaId}/c${chapterId}/`;
 
-        // --- Method 1: Decode P.A.C.K.E.R obfuscated JS block ---
-        // After decoding we search for any CDN image URLs (not just newImgs variable name).
+        // --- Method 1a: Decode P.A.C.K.E.R block → scan decoded JS for CDN image URLs ---
         const unpacked = depackPACKER(html);
         if (unpacked) {
-          const urls = extractImgUrlsFromUnpacked(unpacked);
-          const cleaned = urls
+          const cdnUrls = extractImgUrlsFromUnpacked(unpacked)
             .filter(u => u.length > 10)
-            .map(u => u.startsWith('//') ? `https:${u}` : u)
-            // Remove trailing backslashes that cause 403 errors
-            .map(u => u.replace(/\\+$/, ''));
-          if (cleaned.length > 0) {
-            console.log(`[MangaHere] Decoded PACKER → ${cleaned.length} images on ${domain}`);
-            return cleaned.map(url =>
+            .map(u => u.startsWith('//') ? `https:${u}` : u);
+          if (cdnUrls.length > 0) {
+            console.log(`[MangaHere] Decoded PACKER (CDN scan) → ${cdnUrls.length} images on ${domain}`);
+            return cdnUrls.map(url =>
               `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
             );
           }
+
+          // --- Method 1b: Parse newImgList / newImgs JSON from PACKER-decoded output ---
+          const listMatch = unpacked.match(/(?:newImgList|newImgs)\s*=\s*(\[[\s\S]*?\])/) ||
+                            unpacked.match(/imgUrl\s*=\s*(\[[\s\S]*?\])/);
+          if (listMatch) {
+            try {
+              const parsed: string[] = JSON.parse(listMatch[1]);
+              const cleaned = parsed
+                .filter(u => typeof u === 'string' && u.length > 10)
+                .map(u => u.startsWith('//') ? `https:${u}` : u)
+                .map(u => u.replace(/\\+$/, ''));
+              if (cleaned.length > 0) {
+                console.log(`[MangaHere] Parsed ${cleaned.length} images from PACKER+JSON list on ${domain}`);
+                return cleaned.map(url =>
+                  `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
+                );
+              }
+            } catch (e) {
+              console.warn('[MangaHere] Failed to parse JSON list from PACKER decoded output');
+            }
+          }
         }
 
-        // --- Method 2: Plain newImgList (desktop site, not obfuscated) ---
+        // --- Method 2: Plain newImgList JSON in raw HTML (desktop, not obfuscated) ---
         const newImgListMatch =
           html.match(/var\s+newImgList\s*=\s*(\[[\s\S]*?\]);/) ||
           html.match(/newImgList\s*=\s*(\[[\s\S]*?\]);/);
@@ -374,17 +391,28 @@ export const mangahereService = {
               .map(u => u.startsWith('//') ? `https:${u}` : u)
               .map(u => u.replace(/\\+$/, ''));
             if (cleaned.length > 0) {
-              console.log(`[MangaHere] Extracted ${cleaned.length} images from newImgList on ${domain}`);
+              console.log(`[MangaHere] Extracted ${cleaned.length} images from plain newImgList on ${domain}`);
               return cleaned.map(url =>
                 `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
               );
             }
           } catch (e) {
-            console.warn('[MangaHere] Failed to parse newImgList JSON');
+            console.warn('[MangaHere] Failed to parse plain newImgList JSON');
           }
         }
 
-        // --- Method 3: Per-page proxy using imagecount (reliable fallback) ---
+        // --- Method 2b: Scan raw HTML for CDN URLs in inline <script> blocks ---
+        const rawCdnUrls = extractImgUrlsFromUnpacked(html)
+          .filter(u => u.length > 10)
+          .map(u => u.startsWith('//') ? `https:${u}` : u);
+        if (rawCdnUrls.length > 0) {
+          console.log(`[MangaHere] Found ${rawCdnUrls.length} CDN URLs in raw HTML on ${domain}`);
+          return rawCdnUrls.map(url =>
+            `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
+          );
+        }
+
+        // --- Method 3: Per-page proxy using imagecount (reliable last resort) ---
         const pageMatch =
           html.match(/var\s+imagecount\s*=\s*(\d+)/) ||
           html.match(/var\s+total_pages\s*=\s*(\d+)/) ||

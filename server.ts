@@ -105,23 +105,41 @@ async function startServer() {
       const idx = Math.max(0, parseInt(pageNum as string) - 1);
       let imageUrl = '';
 
-      // Pattern 1: Decode P.A.C.K.E.R block → extract image URLs by CDN domain
-      // After decoding we search for any known MangaHere CDN URL, regardless of variable name.
-      const unpacked = depackPACKER(html);
-      if (unpacked) {
-        const cdnAlt = ['mfcdn', 'dmimg', 'mangahere', 'mhcdn', 'fanfox'].join('|');
-        const urlPattern = new RegExp(
-          `['"\\\\]([^'"\\\\]*(?:${cdnAlt})[^'"\\\\]*\\.(?:jpg|jpeg|png|webp|gif)[^'"\\\\]*)['"\\\\]`,
+      const CDN_ALT = ['mfcdn', 'dmimg', 'mangahere', 'mhcdn', 'fanfox'];
+      const cdnAltStr = CDN_ALT.join('|');
+
+      // Helper: extract all CDN image URLs from an arbitrary JS string
+      function extractCdnUrls(src: string): string[] {
+        const pat = new RegExp(
+          `['"\\\\]([^'"\\\\]*(?:${cdnAltStr})[^'"\\\\]*\\.(?:jpg|jpeg|png|webp|gif)[^'"\\\\]*)['"\\\\]`,
           'gi'
         );
-        const imgUrls: string[] = [];
-        let mm: RegExpExecArray | null;
-        while ((mm = urlPattern.exec(unpacked)) !== null) imgUrls.push(mm[1]);
-        const cleaned = imgUrls.map(u => u.replace(/\\+$/, ''));
-        if (cleaned[idx]) imageUrl = cleaned[idx];
+        const out: string[] = [];
+        let m: RegExpExecArray | null;
+        while ((m = pat.exec(src)) !== null) out.push(m[1].replace(/\\+$/, ''));
+        return out;
       }
 
-      // Pattern 2: Plain newImgList (desktop site fallback)
+      // Pattern 1a: Decode P.A.C.K.E.R block → scan decoded JS for CDN URLs
+      const unpacked = depackPACKER(html);
+      if (unpacked) {
+        const cdnUrls = extractCdnUrls(unpacked);
+        if (cdnUrls[idx]) imageUrl = cdnUrls[idx];
+
+        // Pattern 1b: Also try to parse newImgList / newImgs JSON from decoded output
+        if (!imageUrl) {
+          const listMatch = unpacked.match(/(?:newImgList|newImgs)\s*=\s*(\[[\s\S]*?\])/) ||
+                            unpacked.match(/imgUrl\s*=\s*(\[[\s\S]*?\])/);
+          if (listMatch) {
+            try {
+              const parsed: string[] = JSON.parse(listMatch[1]);
+              if (parsed[idx]) imageUrl = parsed[idx];
+            } catch (_) {}
+          }
+        }
+      }
+
+      // Pattern 2: Plain newImgList JSON in raw HTML (desktop, not obfuscated)
       if (!imageUrl) {
         const newImgListMatch = html.match(/var\s+newImgList\s*=\s*(\[[\s\S]*?\]);/) ||
                                 html.match(/newImgList\s*=\s*(\[[\s\S]*?\]);/);
@@ -133,7 +151,20 @@ async function startServer() {
         }
       }
 
-      // Pattern 3: JavaScript variable assignments
+      // Pattern 3: Scan raw HTML itself for CDN URLs (covers inline <script> blocks)
+      if (!imageUrl) {
+        const rawCdnUrls = extractCdnUrls(html);
+        if (rawCdnUrls[idx]) imageUrl = rawCdnUrls[idx];
+      }
+
+      // Pattern 4: <img id="image"> tag — MangaHere desktop reader element
+      if (!imageUrl) {
+        const imgTagMatch = html.match(/<img[^>]+id=["']image["'][^>]+src=["']([^"']+)["']/) ||
+                            html.match(/<img[^>]+src=["']([^"']+)["'][^>]+id=["']image["']/);
+        if (imgTagMatch) imageUrl = imgTagMatch[1];
+      }
+
+      // Pattern 5: JavaScript variable assignments
       if (!imageUrl) {
         const varMatch =
           html.match(/cp_image\.src\s*=\s*["']([^"']+)["']/) ||
