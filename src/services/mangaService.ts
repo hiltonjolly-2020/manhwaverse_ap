@@ -19,6 +19,7 @@ export interface Manga {
   coverUrl: string;
   status: string;
   year: number | null;
+  originalLanguage?: string;
   tags: string[];
   author: string;
   rating: string;
@@ -292,6 +293,7 @@ export const mangaService = {
       coverUrl,
       status: attributes.status,
       year: attributes.year,
+      originalLanguage: attributes.originalLanguage,
       tags: attributes.tags.map((t: any) => t.attributes.name.en),
       author: authorRel?.attributes?.name || 'Unknown Author',
       rating: attributes.contentRating,

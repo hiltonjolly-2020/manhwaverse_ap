@@ -29,6 +29,21 @@ const TYPES = [
   { label: 'Others', value: 'others' }
 ];
 
+const CONTENT_RATING_GENRES: Record<string, string> = {
+  Adult: 'pornographic',
+  Erotica: 'erotica',
+  Smut: 'erotica',
+  Ecchi: 'suggestive'
+};
+
+const KEYWORD_GENRES = ['Leveling'];
+
+const OTHER_ORIGINAL_LANGUAGES = [
+  'en', 'fr', 'de', 'es', 'es-la', 'it', 'pt', 'pt-br', 'ru', 'uk', 'pl', 'tr',
+  'vi', 'id', 'th', 'ar', 'hi', 'ms', 'tl', 'fa', 'he', 'ro', 'hu', 'cs', 'bg',
+  'el', 'nl', 'sv', 'fi', 'da', 'no', 'bn', 'ta', 'ka', 'mn'
+];
+
 export default function SearchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState(searchParams.get('q') || '');
@@ -58,13 +73,16 @@ export default function SearchPage() {
       if (sortBy === 'rating') order['order[rating]'] = 'desc';
       if (sortBy === 'relevance') order['order[relevance]'] = 'desc';
 
+      const tagGenreSelections = selectedGenres.filter(genre => !CONTENT_RATING_GENRES[genre] && !KEYWORD_GENRES.includes(genre));
+      const excludedTagGenreSelections = excludedGenres.filter(genre => !CONTENT_RATING_GENRES[genre] && !KEYWORD_GENRES.includes(genre));
+
       const tagIds = await Promise.all(
-        selectedGenres.map(genre => mangaService.getTagId(genre))
+        tagGenreSelections.map(genre => mangaService.getTagId(genre))
       );
       const filteredTagIds = tagIds.filter((id): id is string => id !== null);
 
       const excludedTagIds = await Promise.all(
-        excludedGenres.map(genre => mangaService.getTagId(genre))
+        excludedTagGenreSelections.map(genre => mangaService.getTagId(genre))
       );
       const filteredExcludedTagIds = excludedTagIds.filter((id): id is string => id !== null);
 
@@ -73,33 +91,41 @@ export default function SearchPage() {
         groupId = await mangaService.getGroupId(selectedGroup);
       }
 
-      const queryGenre = GENRES.find(g => g.toLowerCase() === query.toLowerCase());
-      const isQueryGenre = !!queryGenre;
-      const finalTitle = isQueryGenre ? '' : query;
+      const appliedQuery = searchParams.get('q') || '';
+      const queryGenre = GENRES.find(g => g.toLowerCase() === appliedQuery.toLowerCase());
+      const queryGenreTagId = queryGenre && !CONTENT_RATING_GENRES[queryGenre] && !KEYWORD_GENRES.includes(queryGenre)
+        ? await mangaService.getTagId(queryGenre)
+        : null;
+      const keywordFilters = [
+        ...selectedGenres.filter(genre => KEYWORD_GENRES.includes(genre)),
+        ...(queryGenre && KEYWORD_GENRES.includes(queryGenre) ? [queryGenre] : [])
+      ];
+      const isQueryGenre = !!queryGenre && (!!queryGenreTagId || !!CONTENT_RATING_GENRES[queryGenre] || KEYWORD_GENRES.includes(queryGenre));
+      const finalTitle = keywordFilters[0] || (isQueryGenre ? '' : appliedQuery);
       
       // Handle Adult/Erotica as special genres if they aren't tags
       let contentRatings = ['safe', 'suggestive', 'erotica', 'pornographic'];
-      if (selectedGenres.includes('Adult')) contentRatings = ['pornographic'];
-      if (selectedGenres.includes('Erotica')) contentRatings = ['erotica'];
-      if (excludedGenres.includes('Adult')) contentRatings = contentRatings.filter(r => r !== 'pornographic');
-      if (excludedGenres.includes('Erotica')) contentRatings = contentRatings.filter(r => r !== 'erotica');
+      const selectedContentRatings = selectedGenres
+        .map(genre => CONTENT_RATING_GENRES[genre])
+        .filter(Boolean);
+      if (queryGenre && CONTENT_RATING_GENRES[queryGenre]) selectedContentRatings.push(CONTENT_RATING_GENRES[queryGenre]);
+      if (selectedContentRatings.length > 0) contentRatings = Array.from(new Set(selectedContentRatings));
+      excludedGenres.forEach(genre => {
+        const rating = CONTENT_RATING_GENRES[genre];
+        if (rating) contentRatings = contentRatings.filter(r => r !== rating);
+      });
       
       let originalLanguages: string[] | undefined = undefined;
       if (selectedType) {
         if (selectedType === 'others') {
-          // For others, we don't send the filter and filter client-side if needed, 
-          // or we could send a list of all other languages. 
-          // But MangaDex usually defaults to all if not specified.
-          // To strictly get "others", we'd need to exclude ko, ja, zh.
-          // MangaDex doesn't support exclusion for originalLanguage.
-          // So we'll just not send it and hope for the best, or send a broad list.
+          originalLanguages = OTHER_ORIGINAL_LANGUAGES;
         } else {
           originalLanguages = selectedType.split(',');
         }
       }
 
       const finalTags = isQueryGenre 
-        ? Array.from(new Set([...filteredTagIds, await mangaService.getTagId(queryGenre)].filter(Boolean) as string[]))
+        ? Array.from(new Set([...filteredTagIds, queryGenreTagId].filter(Boolean) as string[]))
         : filteredTagIds;
 
       const data = await mangaService.searchManga(
@@ -117,7 +143,14 @@ export default function SearchPage() {
         contentRatings,
         originalLanguages
       );
-      setResults(data);
+      let filteredData = data;
+      if (selectedType === 'others') {
+        filteredData = data.filter((manga: any) => {
+          const language = manga.originalLanguage || manga.language || manga.attributes?.originalLanguage;
+          return language ? !['ko', 'ja', 'zh', 'zh-hk'].includes(language) : true;
+        });
+      }
+      setResults(filteredData);
     } catch (error) {
       console.error('Error searching manga:', error);
     } finally {
@@ -140,7 +173,7 @@ export default function SearchPage() {
 
   useEffect(() => {
     performSearch();
-  }, [sortBy, selectedGenres, excludedGenres, selectedGroup, selectedDemographic, selectedStatus, selectedYear, tagMode, page]);
+  }, [searchParams, sortBy, selectedGenres, excludedGenres, selectedGroup, selectedDemographic, selectedStatus, selectedType, selectedYear, tagMode, page]);
 
   const clearFilters = () => {
     setSelectedGenres([]);
@@ -387,7 +420,7 @@ export default function SearchPage() {
               </Button>
             </div>
           </>
-        ) : (query || selectedGenres.length > 0 || selectedGroup || selectedDemographic || selectedStatus) && !loading ? (
+        ) : (query || selectedGenres.length > 0 || excludedGenres.length > 0 || selectedGroup || selectedDemographic || selectedStatus || selectedType || selectedYear) && !loading ? (
           <div className="col-span-full py-20 text-center space-y-6">
             <div className="w-20 h-20 bg-zinc-900 rounded-full flex items-center justify-center mx-auto border border-zinc-800">
               <SearchIcon className="w-10 h-10 text-zinc-700" />
