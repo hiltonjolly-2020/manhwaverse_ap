@@ -56,78 +56,92 @@ async function startServer() {
     }
   });
 
-  // Optimized MangaHere Image extractor
+  // MangaHere per-page image extractor (fallback when newImgList is unavailable)
   app.get('/api/proxy-mangahere-image', async (req, res) => {
     const { domain, mangaId, chapterId, page } = req.query;
     if (!mangaId || !chapterId) return res.status(400).send('Missing params');
 
-    const targetUrl = `https://${domain}/manga/${mangaId}/c${chapterId}/${page || 1}.html`;
-    const referer = `https://${domain}/manga/${mangaId}/c${chapterId}/`;
+    const domainStr = (domain as string) || 'www.mangahere.cc';
+    const pageNum = page || 1;
+    const targetUrl = `https://${domainStr}/manga/${mangaId}/c${chapterId}/${pageNum}.html`;
+    const referer = `https://${domainStr}/manga/${mangaId}/c${chapterId}/`;
+    const isMobile = domainStr.startsWith('m.') || domainStr.startsWith('newm.');
 
     try {
       console.log(`[MangaHere Image Proxy] Fetching HTML from: ${targetUrl}`);
-      // 1. Fetch the HTML page
+
       const htmlResponse = await axios.get(targetUrl, {
         headers: {
           'Referer': referer,
-          'User-Agent': (domain.toString().startsWith('m.') || domain.toString().startsWith('newm.'))
+          'User-Agent': isMobile
             ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1'
             : USER_AGENTS[0],
-          'Cookie': 'is_adult=1;'
+          'Cookie': 'is_adult=1;',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
         },
-        timeout: 10000
+        timeout: 12000
       });
 
-      const html = htmlResponse.data;
-      // 2. Extract image URL
-      // We try several common patterns used by MangaHere
+      const html = htmlResponse.data as string;
       let imageUrl = '';
-      
-      // Pattern 1: Mobile ID #image and common reader images
-      const mobileMatch = html.match(/<img[^>]+id="image"[^>]+src="([^"]+)"/) ||
-                          html.match(/<img[^>]+class="reader-main-img"[^>]+src="([^"]+)"/) ||
-                          html.match(/<img[^>]+class="reader-img"[^>]+src="([^"]+)"/);
-      // Pattern 2: Global newImgList (Desktop)
-      const listMatch = html.match(/newImgList\s*=\s*\["(.*?)"\]/) ||
-                        html.match(/var\s+newImgList\s*=\s*\["(.*?)"\]/);
-      // Pattern 3: Desktop script variables like cp_image or pix
-      const varMatch = html.match(/cp_image\.src\s*=\s*"(.*?)"/) || 
-                       html.match(/var\s+pix\s*=\s*"(.*?)"/) ||
-                       html.match(/imageUrl\s*=\s*"(.*?)"/) ||
-                       html.match(/image_list\s*=\s*\["(.*?)"\]/);
-      // Pattern 4: Fallback to any dmimg.com, mangahere.cc, or static.mangahere images
-      // Also look for data-src which is common in lazy loaders
-      const fallbackMatch = html.match(/<img[^>]+src="([^"]+dmimg\.com\/[^"]+)"/) ||
-                            html.match(/<img[^>]+data-src="([^"]+dmimg\.com\/[^"]+)"/) ||
-                            html.match(/<img[^>]+src="([^"]+mangahere\.cc\/[^"]+)"/) ||
-                            html.match(/<img[^>]+src="([^"]+static\.mangahere\.cc\/[^"]+)"/);
-                            
-      if (mobileMatch) imageUrl = mobileMatch[1];
-      else if (listMatch) imageUrl = listMatch[1];
-      else if (varMatch) imageUrl = varMatch[1];
-      else if (fallbackMatch) imageUrl = fallbackMatch[1];
-                            
-      if (imageUrl) {
-        if (imageUrl.startsWith('//')) imageUrl = 'https:' + imageUrl;
-        // DO NOT strip query parameters here anymore, as some CDNs require them for auth/tokens
+
+      // Pattern 1: newImgList array — extract the Nth URL (page index)
+      const newImgListMatch = html.match(/var\s+newImgList\s*=\s*(\[[\s\S]*?\]);/) ||
+                              html.match(/newImgList\s*=\s*(\[[\s\S]*?\]);/);
+      if (newImgListMatch) {
+        try {
+          const urls: string[] = JSON.parse(newImgListMatch[1]);
+          const idx = Math.max(0, parseInt(pageNum as string) - 1);
+          if (urls[idx]) imageUrl = urls[idx];
+        } catch (_) {}
       }
 
+      // Pattern 2: Mobile reader #image tag
       if (!imageUrl) {
-        console.error(`[MangaHere Image Proxy] Could not find image in HTML for ${targetUrl}`);
-        // Log a small sample of the HTML to help debug
-        console.log(`[MangaHere Image Proxy] HTML Head: ${html.substring(0, 500)}`);
+        const mobileMatch =
+          html.match(/<img[^>]+id=["']image["'][^>]+(?:data-src|src)=["']([^"']+)["']/) ||
+          html.match(/<img[^>]+(?:data-src|src)=["']([^"']+)["'][^>]+id=["']image["']/) ||
+          html.match(/<img[^>]+class=["'][^"']*reader-main-img[^"']*["'][^>]+(?:data-src|src)=["']([^"']+)["']/) ||
+          html.match(/<img[^>]+class=["'][^"']*reader-img[^"']*["'][^>]+(?:data-src|src)=["']([^"']+)["']/);
+        if (mobileMatch) imageUrl = mobileMatch[1];
+      }
+
+      // Pattern 3: JavaScript variable assignments
+      if (!imageUrl) {
+        const varMatch =
+          html.match(/cp_image\.src\s*=\s*["']([^"']+)["']/) ||
+          html.match(/var\s+pix\s*=\s*["']([^"']+)["']/) ||
+          html.match(/(?:imageUrl|image_url)\s*=\s*["']([^"']+)["']/) ||
+          html.match(/"url"\s*:\s*"(https?:\/\/[^"]+(?:mfcdn|dmimg)[^"]+)"/);
+        if (varMatch) imageUrl = varMatch[1];
+      }
+
+      // Pattern 4: Any CDN image tag (dmimg, mfcdn, mangahere CDN domains)
+      if (!imageUrl) {
+        const cdnMatch =
+          html.match(/<img[^>]+(?:data-src|src)=["']((?:https?:)?\/\/[^"']*(?:dmimg|mfcdn|mangahere\.cc)[^"']+)["']/) ||
+          html.match(/<img[^>]+(?:data-src|src)=["'](\/\/[^"']+\.(?:jpg|jpeg|png|webp|gif)[^"']*)["']/i);
+        if (cdnMatch) imageUrl = cdnMatch[1];
+      }
+
+      if (imageUrl && imageUrl.startsWith('//')) imageUrl = 'https:' + imageUrl;
+
+      if (!imageUrl) {
+        console.error(`[MangaHere Image Proxy] No image found for ${targetUrl}`);
+        console.log(`[MangaHere Image Proxy] HTML sample: ${html.substring(0, 800)}`);
         return res.status(404).send('Image not found in source');
       }
 
-      console.log(`[MangaHere Image Proxy] Found Image URL: ${imageUrl}`);
+      console.log(`[MangaHere Image Proxy] Found: ${imageUrl}`);
 
-      // 3. Proxy the actual image
       const imageResponse = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
         headers: {
-          'Referer': targetUrl,
+          'Referer': referer,
           'User-Agent': USER_AGENTS[0],
-          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'Cookie': 'is_adult=1;'
         },
         timeout: 20000
       });
@@ -143,16 +157,31 @@ async function startServer() {
     }
   });
 
-  // Proxy for MangaDex Images
+  // Proxy for images (MangaDex, MangaHere CDN, etc.)
+  // Accepts optional ?referer= to set the correct Referer header for different CDNs
   app.get('/api/proxy-image', async (req, res) => {
     const imageUrl = req.query.url as string;
+    const customReferer = req.query.referer as string | undefined;
     if (!imageUrl) return res.status(400).send('URL is required');
+
+    // Determine the right referer: use custom if provided, otherwise infer from the URL host
+    let referer = customReferer || 'https://mangadex.org/';
+    if (!customReferer) {
+      try {
+        const urlHost = new URL(imageUrl).origin;
+        if (imageUrl.includes('mfcdn') || imageUrl.includes('dmimg') || imageUrl.includes('mangahere')) {
+          referer = 'https://www.mangahere.cc/';
+        } else {
+          referer = urlHost + '/';
+        }
+      } catch (_) {}
+    }
 
     try {
       const response = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
         headers: {
-          'Referer': 'https://mangadex.org/',
+          'Referer': referer,
           'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
           'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
