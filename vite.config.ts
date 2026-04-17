@@ -19,6 +19,9 @@ export default defineConfig(({mode}) => {
       hmr: process.env.DISABLE_HMR !== 'true',
       allowedHosts: true,
       host: '0.0.0.0',
+      watch: {
+        ignored: ['**/.local/**', '**/node_modules/**'],
+      },
     },
   };
 });
