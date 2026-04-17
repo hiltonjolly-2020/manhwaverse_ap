@@ -108,7 +108,7 @@ async function startServer() {
       const CDN_ALT = ['mfcdn', 'dmimg', 'mangahere', 'mhcdn', 'fanfox'];
       const cdnAltStr = CDN_ALT.join('|');
 
-      // Helper: extract all CDN image URLs from an arbitrary JS string
+      // Helper: extract CDN image URLs from an arbitrary JS string
       function extractCdnUrls(src: string): string[] {
         const pat = new RegExp(
           `['"\\\\]([^'"\\\\]*(?:${cdnAltStr})[^'"\\\\]*\\.(?:jpg|jpeg|png|webp|gif)[^'"\\\\]*)['"\\\\]`,
@@ -120,51 +120,149 @@ async function startServer() {
         return out;
       }
 
-      // Pattern 1a: Decode P.A.C.K.E.R block → scan decoded JS for CDN URLs
-      const unpacked = depackPACKER(html);
-      if (unpacked) {
-        const cdnUrls = extractCdnUrls(unpacked);
-        if (cdnUrls[idx]) imageUrl = cdnUrls[idx];
+      // Helper: validate a URL is a real chapter image (not a logo/placeholder/site asset)
+      function isChapterImg(url: string): boolean {
+        if (!url || url.length < 10) return false;
+        if (/logo|loading|placeholder|blank|default|banner|avatar|icon|button|arrow|close/i.test(url)) return false;
+        if (!/\.(jpg|jpeg|png|webp|gif)/i.test(url)) return false;
+        return true;
+      }
 
-        // Pattern 1b: Also try to parse newImgList / newImgs JSON from decoded output
-        if (!imageUrl) {
-          const listMatch = unpacked.match(/(?:newImgList|newImgs)\s*=\s*(\[[\s\S]*?\])/) ||
-                            unpacked.match(/imgUrl\s*=\s*(\[[\s\S]*?\])/);
-          if (listMatch) {
-            try {
-              const parsed: string[] = JSON.parse(listMatch[1]);
-              if (parsed[idx]) imageUrl = parsed[idx];
-            } catch (_) {}
+      // --- Priority 0: DM5 API — chapterfun.ashx ---
+      // MangaHere uses the DM5 reader platform. The PACKER on chapter pages only contains
+      // a "guidkey" used to call chapterfun.ashx, which returns actual CDN image URLs.
+      // Our server IP can access chapterfun.ashx; the CDN blocks datacenter IPs but not
+      // browser IPs, so we redirect the browser to fetch the CDN image directly.
+      const unpacked = depackPACKER(html);
+      if (unpacked && /var\s+guidkey\s*=/.test(unpacked)) {
+        // Extract chapterid from raw HTML
+        const chdIdMatch = html.match(/chapterid\s*=\s*(\d+)/);
+        const chapterfunCid = chdIdMatch ? chdIdMatch[1] : null;
+
+        // Extract guidkey by joining all hex char literals in the guidkey assignment
+        const gkLine = unpacked.match(/var\s+guidkey\s*=\s*([^;]+);/)?.[1] || '';
+        const guidkey = (gkLine.match(/'([a-f0-9])'/g) || []).map((s: string) => s.replace(/'/g, '')).join('');
+
+        if (chapterfunCid && guidkey) {
+          try {
+            console.log(`[MangaHere Image Proxy] DM5 flow: cid=${chapterfunCid} page=${pageNum} key=${guidkey}`);
+            const cfUrl = `https://${domainStr}/chapterfun.ashx`;
+            const cfResp = await axios.get(cfUrl, {
+              params: { cid: chapterfunCid, page: pageNum, key: guidkey },
+              headers: {
+                'Referer': targetUrl,
+                'User-Agent': USER_AGENTS[0],
+                'Cookie': 'is_adult=1;',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': '*/*',
+              },
+              timeout: 10000,
+            });
+
+            const cfBody = typeof cfResp.data === 'string' ? cfResp.data : JSON.stringify(cfResp.data);
+            const cfDecoded = depackPACKER(cfBody);
+            console.log(`[MangaHere Image Proxy] chapterfun decoded (${(cfDecoded || '').length} chars): ${(cfDecoded || '').slice(0, 300)}`);
+
+            if (cfDecoded) {
+              // Extract base URL (pix) — CDN path without extension
+              const pixMatch = cfDecoded.match(/"(\/\/[^"]+(?:zjcdn|fmcdn|mfcdn|dmimg|mangahere|fanfox)[^"]*)"/);
+              // Extract filename array (pvalue) — list of /oNNN.jpg entries
+              const pvMatch = cfDecoded.match(/\[((?:"\/[^"]+\.[a-z]+"\s*,?\s*)+)\]/);
+
+              if (pixMatch && pvMatch) {
+                const pix = pixMatch[1];
+                const filenames: string[] = [];
+                const fnReg = /"(\/[^"]+\.[a-z]+)"/g;
+                let fnM: RegExpExecArray | null;
+                while ((fnM = fnReg.exec(pvMatch[0])) !== null) filenames.push(fnM[1]);
+
+                // Page 1 maps to filenames[0], page N may map to filenames[0] (per-call basis)
+                const fname = filenames[0] || '';
+                if (fname) {
+                  imageUrl = 'https:' + pix + fname;
+                  console.log(`[MangaHere Image Proxy] DM5 CDN URL: ${imageUrl}`);
+                  // Redirect browser to CDN URL — the browser's IP is not blocked
+                  res.setHeader('Location', imageUrl);
+                  res.setHeader('Cache-Control', 'public, max-age=86400');
+                  res.setHeader('Referrer-Policy', 'no-referrer');
+                  return res.status(302).end();
+                }
+              }
+            }
+          } catch (dm5Err: any) {
+            console.error(`[MangaHere Image Proxy] DM5 API error: ${dm5Err.message}`);
           }
         }
       }
 
-      // Pattern 2: Plain newImgList JSON in raw HTML (desktop, not obfuscated)
+      if (!imageUrl && unpacked) {
+        const listMatch = unpacked.match(/(?:newImgList|newImgs)\s*=\s*(\[[\s\S]*?\])/) ||
+                          unpacked.match(/imgUrl\s*=\s*(\[[\s\S]*?\])/);
+        if (listMatch) {
+          try {
+            const parsed: string[] = JSON.parse(listMatch[1]);
+            const candidate = (parsed[idx] || parsed[0] || '').toString();
+            if (isChapterImg(candidate)) imageUrl = candidate;
+          } catch (_) {}
+        }
+      }
+
+      // --- Priority 2: PACKER decode → newImgList[N]='url' array-index assignments ---
+      if (!imageUrl && unpacked) {
+        const assignmentMatches = [...unpacked.matchAll(/newImgList\[(\d+)\]\s*=\s*['"]([^'"]+)['"]/g)];
+        if (assignmentMatches.length > 0) {
+          const ordered: string[] = [];
+          for (const m of assignmentMatches) {
+            ordered[parseInt(m[1])] = m[2];
+          }
+          const candidate = ordered[idx] || ordered[0] || '';
+          if (isChapterImg(candidate)) imageUrl = candidate;
+        }
+      }
+
+      // --- Priority 3: PACKER decode → CDN URL scan (chapter-image paths only) ---
+      if (!imageUrl && unpacked) {
+        const cdnUrls = extractCdnUrls(unpacked)
+          .filter(u => isChapterImg(u) && /\/(?:store|manga)\//.test(u));
+        const candidate = cdnUrls[idx] || cdnUrls[0] || '';
+        if (candidate) imageUrl = candidate;
+      }
+
+      // --- Priority 4: Plain newImgList JSON in raw HTML (not obfuscated) ---
       if (!imageUrl) {
         const newImgListMatch = html.match(/var\s+newImgList\s*=\s*(\[[\s\S]*?\]);/) ||
                                 html.match(/newImgList\s*=\s*(\[[\s\S]*?\]);/);
         if (newImgListMatch) {
           try {
             const urls: string[] = JSON.parse(newImgListMatch[1]);
-            if (urls[idx]) imageUrl = urls[idx];
+            const candidate = (urls[idx] || urls[0] || '').toString();
+            if (isChapterImg(candidate)) imageUrl = candidate;
           } catch (_) {}
         }
       }
 
-      // Pattern 4: <img id="image"> tag — MangaHere desktop reader element
+      // --- Priority 5: <img id="image"> — only if src looks like a real chapter image ---
+      // Note: MangaHere uses logo.png as the img[id=image] placeholder before JS runs.
+      // We ONLY accept it if the src passes the chapter-image validation.
       if (!imageUrl) {
-        const imgTagMatch = html.match(/<img[^>]+id=["']image["'][^>]+src=["']([^"']+)["']/) ||
-                            html.match(/<img[^>]+src=["']([^"']+)["'][^>]+id=["']image["']/);
-        if (imgTagMatch) imageUrl = imgTagMatch[1];
+        const imgTagMatches = [
+          html.match(/<img[^>]+id=["']image["'][^>]+data-src=["']([^"']+)["']/),
+          html.match(/<img[^>]+data-src=["']([^"']+)["'][^>]+id=["']image["']/),
+          html.match(/<img[^>]+id=["']image["'][^>]+src=["']([^"']+)["']/),
+          html.match(/<img[^>]+src=["']([^"']+)["'][^>]+id=["']image["']/),
+        ];
+        for (const m of imgTagMatches) {
+          if (m && isChapterImg(m[1])) { imageUrl = m[1]; break; }
+        }
       }
 
-      // Pattern 5: JavaScript variable assignments
+      // --- Priority 6: JavaScript variable assignments (page-specific) ---
       if (!imageUrl) {
         const varMatch =
           html.match(/cp_image\.src\s*=\s*["']([^"']+)["']/) ||
           html.match(/var\s+pix\s*=\s*["']([^"']+)["']/) ||
-          html.match(/(?:imageUrl|image_url)\s*=\s*["']([^"']+)["']/);
-        if (varMatch) imageUrl = varMatch[1];
+          html.match(/(?:imageUrl|image_url|imgSrc)\s*=\s*["']([^"']+\.(?:jpg|jpeg|png|webp|gif)[^"']*)["']/i);
+        if (varMatch && isChapterImg(varMatch[1])) imageUrl = varMatch[1];
       }
 
       if (imageUrl && imageUrl.startsWith('//')) imageUrl = 'https:' + imageUrl;

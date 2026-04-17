@@ -347,17 +347,8 @@ export const mangahereService = {
         // --- Method 1a: Decode P.A.C.K.E.R block → scan decoded JS for CDN image URLs ---
         const unpacked = depackPACKER(html);
         if (unpacked) {
-          const cdnUrls = extractImgUrlsFromUnpacked(unpacked)
-            .filter(u => u.length > 10)
-            .map(u => u.startsWith('//') ? `https:${u}` : u);
-          if (cdnUrls.length > 0) {
-            console.log(`[MangaHere] Decoded PACKER (CDN scan) → ${cdnUrls.length} images on ${domain}`);
-            return cdnUrls.map(url =>
-              `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
-            );
-          }
-
           // --- Method 1b: Parse newImgList / newImgs JSON from PACKER-decoded output ---
+          // Try this FIRST — it gives the full ordered list of all chapter images
           const listMatch = unpacked.match(/(?:newImgList|newImgs)\s*=\s*(\[[\s\S]*?\])/) ||
                             unpacked.match(/imgUrl\s*=\s*(\[[\s\S]*?\])/);
           if (listMatch) {
@@ -376,6 +367,37 @@ export const mangahereService = {
             } catch (e) {
               console.warn('[MangaHere] Failed to parse JSON list from PACKER decoded output');
             }
+          }
+
+          // --- Method 1c: newImgList[N]='url' array-index assignment style ---
+          // PACKER sometimes decodes to `newImgList[0]='url'; newImgList[1]='url'` instead of JSON array
+          const assignmentMatches = [...unpacked.matchAll(/newImgList\[(\d+)\]\s*=\s*['"]([^'"]+)['"]/g)];
+          if (assignmentMatches.length > 0) {
+            const ordered: string[] = [];
+            for (const m of assignmentMatches) {
+              ordered[parseInt(m[1])] = m[2].startsWith('//') ? `https:${m[2]}` : m[2];
+            }
+            const cleaned = ordered.filter(u => typeof u === 'string' && u.length > 10);
+            if (cleaned.length > 0) {
+              console.log(`[MangaHere] Extracted ${cleaned.length} images from PACKER array assignments on ${domain}`);
+              return cleaned.map(url =>
+                `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
+              );
+            }
+          }
+
+          // CDN scan — only accept URLs that look like actual manga chapter pages
+          // (must contain /store/ or /manga/ to avoid picking up thumbnails/nav images)
+          const cdnUrls = extractImgUrlsFromUnpacked(unpacked)
+            .filter(u => u.length > 10 && /\/(?:store|manga)\//.test(u))
+            .filter(u => !/(?:thumb|cover|banner|avatar|logo|icon)/i.test(u))
+            .map(u => u.startsWith('//') ? `https:${u}` : u);
+          // Only trust CDN scan if it found multiple images (single hits are likely false positives)
+          if (cdnUrls.length >= 2) {
+            console.log(`[MangaHere] Decoded PACKER (CDN scan) → ${cdnUrls.length} images on ${domain}`);
+            return cdnUrls.map(url =>
+              `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
+            );
           }
         }
 
@@ -402,11 +424,19 @@ export const mangahereService = {
         }
 
         // --- Method 3: Per-page proxy using imagecount (reliable last resort) ---
+        // Try every known pattern for page count, including from the PACKER-decoded output
+        const unpackedForCount = depackPACKER(html);
+        const countSource = unpackedForCount ? unpackedForCount + html : html;
         const pageMatch =
-          html.match(/var\s+imagecount\s*=\s*(\d+)/) ||
-          html.match(/var\s+total_pages\s*=\s*(\d+)/) ||
-          html.match(/total_pages\s*=\s*(\d+)/) ||
-          html.match(/var\s+image_count\s*=\s*(\d+)/);
+          countSource.match(/var\s+imagecount\s*=\s*(\d+)/) ||
+          countSource.match(/imagecount\s*=\s*(\d+)/) ||
+          countSource.match(/var\s+total_pages\s*=\s*(\d+)/) ||
+          countSource.match(/total_pages\s*=\s*(\d+)/) ||
+          countSource.match(/var\s+image_count\s*=\s*(\d+)/) ||
+          countSource.match(/["']total_pages["']\s*:\s*(\d+)/) ||
+          countSource.match(/["']imagecount["']\s*:\s*(\d+)/) ||
+          html.match(/>\s*1\s*\/\s*(\d+)\s*</) ||
+          html.match(/page\s+1\s+of\s+(\d+)/i);
 
         const totalPages = pageMatch ? parseInt(pageMatch[1]) : 0;
 
