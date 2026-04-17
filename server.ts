@@ -4,6 +4,24 @@ import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+// Decodes P.A.C.K.E.R eval(function(p,a,c,k,e,d){}) obfuscation — same as mangahereService.ts
+function depackPACKER(html: string): string | null {
+  const evalMatch = html.match(/eval\(function\(p,a,c,k,e,d?\)\{[\s\S]*?\}\('([\s\S]*?)',(\d+),(\d+),'([\s\S]*?)'\.split\('\|'\)/);
+  if (!evalMatch) return null;
+  const p = evalMatch[1];
+  const a = parseInt(evalMatch[2]);
+  const c = parseInt(evalMatch[3]);
+  const k = evalMatch[4].split('|');
+  function encode(n: number): string {
+    return (n < a ? '' : encode(Math.floor(n / a))) +
+      ((n = n % a) > 35 ? String.fromCharCode(n + 29) : n.toString(36));
+  }
+  const d: Record<string, string> = {};
+  let i = c;
+  while (i--) { const enc = encode(i); d[enc] = k[i] || enc; }
+  return p.replace(/\b\w+\b/g, (word) => d[word] !== undefined ? d[word] : word);
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -84,27 +102,33 @@ async function startServer() {
       });
 
       const html = htmlResponse.data as string;
+      const idx = Math.max(0, parseInt(pageNum as string) - 1);
       let imageUrl = '';
 
-      // Pattern 1: newImgList array — extract the Nth URL (page index)
-      const newImgListMatch = html.match(/var\s+newImgList\s*=\s*(\[[\s\S]*?\]);/) ||
-                              html.match(/newImgList\s*=\s*(\[[\s\S]*?\]);/);
-      if (newImgListMatch) {
-        try {
-          const urls: string[] = JSON.parse(newImgListMatch[1]);
-          const idx = Math.max(0, parseInt(pageNum as string) - 1);
-          if (urls[idx]) imageUrl = urls[idx];
-        } catch (_) {}
+      // Pattern 1: Decode P.A.C.K.E.R block → extract newImgs[pageIndex]
+      // MangaHere mobile packs ALL page URLs into one eval'd block on page 1 only.
+      // Each individual page also contains the same packed block so we can extract
+      // the specific image for this page number.
+      const unpacked = depackPACKER(html);
+      if (unpacked && (/var\s+newImgs\s*=/.test(unpacked) || /newImgs\s*=/.test(unpacked))) {
+        // Extract URLs — decoded JS has \' escape sequences, so exclude backslash from capture
+        const urlPattern = /['"\\]([^'"\\]*mangahere[^'"\\]*\.(?:jpg|jpeg|png|webp|gif)[^'"\\]*)['"\\]/gi;
+        const imgUrls: string[] = [];
+        let mm: RegExpExecArray | null;
+        while ((mm = urlPattern.exec(unpacked)) !== null) imgUrls.push(mm[1]);
+        if (imgUrls[idx]) imageUrl = imgUrls[idx];
       }
 
-      // Pattern 2: Mobile reader #image tag
+      // Pattern 2: Plain newImgList (desktop site fallback)
       if (!imageUrl) {
-        const mobileMatch =
-          html.match(/<img[^>]+id=["']image["'][^>]+(?:data-src|src)=["']([^"']+)["']/) ||
-          html.match(/<img[^>]+(?:data-src|src)=["']([^"']+)["'][^>]+id=["']image["']/) ||
-          html.match(/<img[^>]+class=["'][^"']*reader-main-img[^"']*["'][^>]+(?:data-src|src)=["']([^"']+)["']/) ||
-          html.match(/<img[^>]+class=["'][^"']*reader-img[^"']*["'][^>]+(?:data-src|src)=["']([^"']+)["']/);
-        if (mobileMatch) imageUrl = mobileMatch[1];
+        const newImgListMatch = html.match(/var\s+newImgList\s*=\s*(\[[\s\S]*?\]);/) ||
+                                html.match(/newImgList\s*=\s*(\[[\s\S]*?\]);/);
+        if (newImgListMatch) {
+          try {
+            const urls: string[] = JSON.parse(newImgListMatch[1]);
+            if (urls[idx]) imageUrl = urls[idx];
+          } catch (_) {}
+        }
       }
 
       // Pattern 3: JavaScript variable assignments
@@ -112,24 +136,14 @@ async function startServer() {
         const varMatch =
           html.match(/cp_image\.src\s*=\s*["']([^"']+)["']/) ||
           html.match(/var\s+pix\s*=\s*["']([^"']+)["']/) ||
-          html.match(/(?:imageUrl|image_url)\s*=\s*["']([^"']+)["']/) ||
-          html.match(/"url"\s*:\s*"(https?:\/\/[^"]+(?:mfcdn|dmimg)[^"]+)"/);
+          html.match(/(?:imageUrl|image_url)\s*=\s*["']([^"']+)["']/);
         if (varMatch) imageUrl = varMatch[1];
-      }
-
-      // Pattern 4: Any CDN image tag (dmimg, mfcdn, mangahere CDN domains)
-      if (!imageUrl) {
-        const cdnMatch =
-          html.match(/<img[^>]+(?:data-src|src)=["']((?:https?:)?\/\/[^"']*(?:dmimg|mfcdn|mangahere\.cc)[^"']+)["']/) ||
-          html.match(/<img[^>]+(?:data-src|src)=["'](\/\/[^"']+\.(?:jpg|jpeg|png|webp|gif)[^"']*)["']/i);
-        if (cdnMatch) imageUrl = cdnMatch[1];
       }
 
       if (imageUrl && imageUrl.startsWith('//')) imageUrl = 'https:' + imageUrl;
 
       if (!imageUrl) {
-        console.error(`[MangaHere Image Proxy] No image found for ${targetUrl}`);
-        console.log(`[MangaHere Image Proxy] HTML sample: ${html.substring(0, 800)}`);
+        console.error(`[MangaHere Image Proxy] No image found for ${targetUrl} (page idx ${idx})`);
         return res.status(404).send('Image not found in source');
       }
 
@@ -234,8 +248,8 @@ async function startServer() {
       fetchMode = 'navigate';
       fetchSite = 'none';
       fetchDest = 'document';
-      // If it's the mobile domain, ensure we use mobile headers
-      if (domain.startsWith('m.')) {
+      // If it's a mobile domain (m. or newm.) ensure we use mobile headers
+      if (domain.startsWith('m.') || domain.startsWith('newm.')) {
         req.headers['is-mobile'] = 'true';
       }
       // Add a cookie to bypass some simple checks

@@ -1,6 +1,32 @@
 import axios from 'axios';
 import { Chapter } from './mangaService';
 
+// Decodes the P.A.C.K.E.R eval(function(p,a,c,k,e,d){}) obfuscation used by MangaHere
+function depackPACKER(html: string): string | null {
+  const evalMatch = html.match(/eval\(function\(p,a,c,k,e,d?\)\{[\s\S]*?\}\('([\s\S]*?)',(\d+),(\d+),'([\s\S]*?)'\.split\('\|'\)/);
+  if (!evalMatch) return null;
+
+  const p = evalMatch[1];
+  const a = parseInt(evalMatch[2]);
+  const c = parseInt(evalMatch[3]);
+  const k = evalMatch[4].split('|');
+
+  function encode(n: number): string {
+    return (n < a ? '' : encode(Math.floor(n / a))) +
+      ((n = n % a) > 35 ? String.fromCharCode(n + 29) : n.toString(36));
+  }
+
+  // Build decode map: if key is empty/falsy keep the encoded form (preserves chars like '0', 'o')
+  const d: Record<string, string> = {};
+  let i = c;
+  while (i--) {
+    const enc = encode(i);
+    d[enc] = k[i] || enc;
+  }
+
+  return p.replace(/\b\w+\b/g, (word) => d[word] !== undefined ? d[word] : word);
+}
+
 const DOMAINS = {
   primary: 'm.mangahere.cc',
   fallback: 'newm.mangahere.cc',
@@ -284,23 +310,48 @@ export const mangahereService = {
 
         if (!html) continue;
 
-        // --- Method 1: Extract newImgList (all pages at once) ---
-        // Format: var newImgList = ["url1","url2",...];
+        const refererUrl = `https://${domain}/manga/${mangaId}/c${chapterId}/`;
+
+        // --- Method 1: Decode P.A.C.K.E.R obfuscated JS block → extract newImgs array ---
+        // MangaHere mobile packs image URLs in eval(function(p,a,c,k,e,d){}) blocks
+        // The variable is `newImgs` (NOT newImgList) containing all chapter page URLs.
+        const unpacked = depackPACKER(html);
+        if (unpacked) {
+          // Check if newImgs variable exists in the decoded code
+          if (/var\s+newImgs\s*=/.test(unpacked) || /newImgs\s*=/.test(unpacked)) {
+            // Extract URLs using regex (decoded JS has \' escape sequences — exclude backslash from capture)
+            const urlPattern = /['"\\]([^'"\\]*mangahere[^'"\\]*\.(?:jpg|jpeg|png|webp|gif)[^'"\\]*)['"\\]/gi;
+            const urls: string[] = [];
+            let m: RegExpExecArray | null;
+            while ((m = urlPattern.exec(unpacked)) !== null) {
+              urls.push(m[1]);
+            }
+            const cleaned = urls
+              .filter(u => u.length > 10)
+              .map(u => u.startsWith('//') ? `https:${u}` : u);
+            if (cleaned.length > 0) {
+              console.log(`[MangaHere] Decoded PACKER → ${cleaned.length} images from newImgs on ${domain}`);
+              return cleaned.map(url =>
+                `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
+              );
+            }
+          }
+        }
+
+        // --- Method 2: Plain newImgList (desktop site, not obfuscated) ---
         const newImgListMatch =
           html.match(/var\s+newImgList\s*=\s*(\[[\s\S]*?\]);/) ||
           html.match(/newImgList\s*=\s*(\[[\s\S]*?\]);/);
-
         if (newImgListMatch) {
           try {
             const urls: string[] = JSON.parse(newImgListMatch[1]);
             const cleaned = urls
               .filter(u => typeof u === 'string' && u.length > 10)
               .map(u => u.startsWith('//') ? `https:${u}` : u);
-
             if (cleaned.length > 0) {
-              console.log(`[MangaHere] Extracted ${cleaned.length} images from newImgList`);
+              console.log(`[MangaHere] Extracted ${cleaned.length} images from newImgList on ${domain}`);
               return cleaned.map(url =>
-                `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(`https://${domain}/manga/${mangaId}/c${chapterId}/`)}`
+                `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(refererUrl)}`
               );
             }
           } catch (e) {
@@ -308,35 +359,15 @@ export const mangahereService = {
           }
         }
 
-        // --- Method 2: imageList or image_list JSON arrays ---
-        const imgListMatch =
-          html.match(/(?:imageList|image_list|imgList)\s*=\s*(\[[\s\S]*?\]);/);
-        if (imgListMatch) {
-          try {
-            const items: any[] = JSON.parse(imgListMatch[1]);
-            const urls = items
-              .map(item => (typeof item === 'string' ? item : item?.url || item?.src || ''))
-              .filter(u => u && u.length > 10)
-              .map(u => u.startsWith('//') ? `https:${u}` : u);
-
-            if (urls.length > 0) {
-              console.log(`[MangaHere] Extracted ${urls.length} images from imageList`);
-              return urls.map(url =>
-                `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(`https://${domain}/manga/${mangaId}/c${chapterId}/`)}`
-              );
-            }
-          } catch (e) {}
-        }
-
-        // --- Method 3: Per-page proxy using total_pages count (reliable fallback) ---
-        // NOTE: Do NOT scan raw CDN <img> tags here — the page contains
-        // recommendation thumbnails and banners from completely different manga
-        // that would show up as false positives.
+        // --- Method 3: Per-page proxy using imagecount (reliable fallback) ---
+        // MangaHere mobile uses `var imagecount=N`, desktop uses `total_pages=N`
+        // NOTE: Do NOT scan raw CDN <img> tags — recommendation thumbnails from
+        // other manga would show up as false positives.
         const pageMatch =
+          html.match(/var\s+imagecount\s*=\s*(\d+)/) ||   // MangaHere mobile
+          html.match(/var\s+total_pages\s*=\s*(\d+)/) ||   // MangaHere desktop
           html.match(/total_pages\s*=\s*(\d+)/) ||
-          html.match(/var\s+image_count\s*=\s*(\d+)/) ||
-          html.match(/var\s+total_pages\s*=\s*(\d+)/) ||
-          html.match(/"count"\s*:\s*(\d+)/);
+          html.match(/var\s+image_count\s*=\s*(\d+)/);
 
         const totalPages = pageMatch ? parseInt(pageMatch[1]) : 0;
 
@@ -349,13 +380,7 @@ export const mangahereService = {
           return pages;
         }
 
-        // Log a diagnostic snippet to help debug if nothing worked
-        const scriptSnippet = (html.match(/<script[\s\S]*?<\/script>/gi) || [])
-          .map(s => s.substring(0, 300))
-          .filter(s => s.includes('img') || s.includes('page') || s.includes('list'))
-          .slice(0, 2)
-          .join('\n---\n');
-        console.warn(`[MangaHere] Could not determine pages for ${mangaId} ch${chapterId} on ${domain}. HTML: ${html.length} bytes. Script hints:\n${scriptSnippet}`);
+        console.warn(`[MangaHere] Could not determine pages for ${mangaId} ch${chapterId} on ${domain}. HTML: ${html.length} bytes`);
       } catch (error: any) {
         console.warn(`[MangaHere] Pages failed on ${domain}:`, error.message);
       }

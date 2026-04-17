@@ -40,6 +40,16 @@ A comprehensive Manga and Manhwa reader web application that aggregates content 
 - Firebase-backed user library and search caching
 - Chapter reader with multiple source fallbacks
 
+## MangaHere Integration Notes
+
+MangaHere mobile site (`newm.mangahere.cc`) uses P.A.C.K.E.R obfuscation for chapter images:
+- **Variable name:** `newImgs` (NOT `newImgList` — completely different from older desktop format)
+- **Page count:** `var imagecount=N` (NOT `total_pages`)
+- **CDN URL format:** `//zjcdn.mangahere.org/store/manga/{comicid}/{chapter}.0/compressed/{filename}.jpg`
+- **Extraction:** `depackPACKER()` function in both `mangahereService.ts` and `server.ts` decodes the eval(function(p,a,c,k,e,d){}) block
+- **URL regex:** Must exclude backslashes (`[^'"\\]`) because `\'` escape sequences in packed JS leave a trailing `\` before closing quotes
+- **Fallback:** Per-page proxy via `/api/proxy-mangahere-image` extracts correct image from each page's packed JS
+
 ## Environment Variables
 
 - `GEMINI_API_KEY` — Google Gemini API key for AI features
