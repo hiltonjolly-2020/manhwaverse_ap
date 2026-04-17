@@ -145,32 +145,42 @@ async function startServer() {
     const { domain, mangaId, chapterId, page } = req.query;
     if (!mangaId || !chapterId) return res.status(400).send('Missing params');
 
-    const domainStr = normalizeAllowedHost((domain as string) || 'www.mangahere.cc');
-    if (!domainStr || !domainStr.includes('mangahere')) return res.status(403).send('Domain not allowed');
+    const requestedDomain = normalizeAllowedHost((domain as string) || 'www.mangahere.cc');
+    if (!requestedDomain || !requestedDomain.includes('mangahere')) return res.status(403).send('Domain not allowed');
+    const domainsToTry = Array.from(new Set([
+      requestedDomain,
+      'm.mangahere.cc',
+      'newm.mangahere.cc',
+      'www.mangahere.cc'
+    ]));
     const pageNum = page || 1;
-    const targetUrl = `https://${domainStr}/manga/${mangaId}/c${chapterId}/${pageNum}.html`;
-    const referer = `https://${domainStr}/manga/${mangaId}/c${chapterId}/`;
-    const isMobile = domainStr.startsWith('m.') || domainStr.startsWith('newm.');
 
-    try {
-      console.log(`[MangaHere Image Proxy] Fetching HTML from: ${targetUrl}`);
+    let lastError: any;
 
-      const htmlResponse = await axios.get(targetUrl, {
-        headers: {
-          'Referer': referer,
-          'User-Agent': isMobile
-            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1'
-            : USER_AGENTS[0],
-          'Cookie': 'is_adult=1;',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9'
-        },
-        timeout: 12000
-      });
+    for (const domainStr of domainsToTry) {
+      const targetUrl = `https://${domainStr}/manga/${mangaId}/c${chapterId}/${pageNum}.html`;
+      const referer = `https://${domainStr}/manga/${mangaId}/c${chapterId}/`;
+      const isMobile = domainStr.startsWith('m.') || domainStr.startsWith('newm.');
 
-      const html = htmlResponse.data as string;
-      const idx = Math.max(0, parseInt(pageNum as string) - 1);
-      let imageUrl = '';
+      try {
+        console.log(`[MangaHere Image Proxy] Fetching HTML from: ${targetUrl}`);
+
+        const htmlResponse = await axios.get(targetUrl, {
+          headers: {
+            'Referer': referer,
+            'User-Agent': isMobile
+              ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1'
+              : USER_AGENTS[0],
+            'Cookie': 'is_adult=1;',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9'
+          },
+          timeout: 12000
+        });
+
+        const html = htmlResponse.data as string;
+        const idx = Math.max(0, parseInt(pageNum as string) - 1);
+        let imageUrl = '';
 
       const CDN_ALT = ['mfcdn', 'dmimg', 'mangahere', 'mhcdn', 'fanfox'];
       const cdnAltStr = CDN_ALT.join('|');
@@ -334,33 +344,42 @@ async function startServer() {
 
       if (imageUrl && imageUrl.startsWith('//')) imageUrl = 'https:' + imageUrl;
 
-      if (!imageUrl) {
-        console.error(`[MangaHere Image Proxy] No image found for ${targetUrl} (page idx ${idx})`);
-        return res.status(404).send('Image not found in source');
+        if (!imageUrl) {
+          console.warn(`[MangaHere Image Proxy] No image found for ${targetUrl} (page idx ${idx})`);
+          continue;
+        }
+
+        console.log(`[MangaHere Image Proxy] Found: ${imageUrl}`);
+
+        const parsedImageUrl = parseAllowedHttpsUrl(imageUrl);
+        if (!parsedImageUrl) {
+          console.warn(`[MangaHere Image Proxy] Blocked unexpected image host: ${imageUrl}`);
+          continue;
+        }
+
+        const imageResponse = await axios.get(parsedImageUrl.toString(), {
+          responseType: 'arraybuffer',
+          headers: {
+            'Referer': referer,
+            'User-Agent': USER_AGENTS[0],
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Cookie': 'is_adult=1;'
+          },
+          timeout: 20000
+        });
+
+        const contentType = imageResponse.headers['content-type'];
+        res.setHeader('Content-Type', contentType || 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return res.send(imageResponse.data);
+      } catch (error: any) {
+        lastError = error;
+        console.error(`[MangaHere Image Proxy Error] ${domainStr}: ${error.message}`);
       }
-
-      console.log(`[MangaHere Image Proxy] Found: ${imageUrl}`);
-
-      const imageResponse = await axios.get(imageUrl, {
-        responseType: 'arraybuffer',
-        headers: {
-          'Referer': referer,
-          'User-Agent': USER_AGENTS[0],
-          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          'Cookie': 'is_adult=1;'
-        },
-        timeout: 20000
-      });
-
-      const contentType = imageResponse.headers['content-type'];
-      res.setHeader('Content-Type', contentType || 'image/jpeg');
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.send(imageResponse.data);
-    } catch (error: any) {
-      console.error(`[MangaHere Image Proxy Error] ${error.message}`);
-      res.status(500).send('Failed to fetch MangaHere image');
     }
+
+    res.status(lastError ? 500 : 404).send(lastError ? 'Failed to fetch MangaHere image' : 'Image not found in source');
   });
 
   // Proxy for images (MangaDex, MangaHere CDN, etc.)
