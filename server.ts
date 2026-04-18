@@ -1,6 +1,5 @@
 import express from 'express';
 import http from 'http';
-import { createServer as createViteServer } from 'vite';
 import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -103,7 +102,7 @@ function safeReferer(rawReferer: string | undefined, fallback: string): string {
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 5000;
+  const PORT = Number(process.env.API_PORT) || 3001;
 
   // Proxy for MangaDex API to avoid CORS issues
   app.get('/api/mangadex/*', async (req, res) => {
@@ -598,18 +597,7 @@ async function startServer() {
 
   const httpServer = http.createServer(app);
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const replitDomain = process.env.REPLIT_DEV_DOMAIN;
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-      },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
+  if (process.env.NODE_ENV === 'production') {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -618,7 +606,7 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`API server running on http://localhost:${PORT}`);
   });
 }
 
