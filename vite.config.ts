@@ -12,9 +12,9 @@ export default defineConfig(({mode}) => {
       },
     },
     server: {
-      hmr: process.env.ENABLE_HMR === 'true',
       allowedHosts: true,
       host: '0.0.0.0',
+      hmr: false,
       watch: {
         ignored: ['**/.local/**', '**/node_modules/**'],
       },
