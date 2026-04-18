@@ -79,7 +79,9 @@ export const mangaService = {
     includedTagsMode: 'AND' | 'OR' = 'AND',
     excludedTags?: string[],
     contentRating?: string[],
-    originalLanguage?: string[]
+    originalLanguage?: string[],
+    authors?: string[],
+    artists?: string[]
   ) {
     const params: any = {
       limit,
@@ -99,9 +101,25 @@ export const mangaService = {
     if (status && status.length > 0) params.status = status;
     if (demographic && demographic.length > 0) params.publicationDemographic = demographic;
     if (year) params.year = year;
+    if (authors && authors.length > 0) params.authors = authors;
+    if (artists && artists.length > 0) params.artists = artists;
 
     const response = await api.get(`${MANGADEX_API_URL}/manga`, { params });
     return response.data.data.map((manga: any) => this.transformManga(manga));
+  },
+
+  async getCreatorIds(name: string): Promise<string[]> {
+    const trimmed = name.trim();
+    if (!trimmed) return [];
+    try {
+      const response = await api.get(`${MANGADEX_API_URL}/author`, {
+        params: { name: trimmed, limit: 10 }
+      });
+      return response.data.data?.map((creator: any) => creator.id) || [];
+    } catch (error) {
+      console.error('Error fetching creator IDs:', error);
+      return [];
+    }
   },
 
   async getGroupId(groupName: string): Promise<string | null> {
@@ -116,11 +134,33 @@ export const mangaService = {
     }
   },
 
+  async getChapterTotal(mangaId: string): Promise<number> {
+    try {
+      const response = await api.get(`${MANGADEX_API_URL}/manga/${mangaId}/feed`, {
+        params: {
+          limit: 1,
+          offset: 0,
+          'translatedLanguage': ['en'],
+          'contentRating': ['safe', 'suggestive', 'erotica', 'pornographic']
+        }
+      });
+      return response.data.total || 0;
+    } catch (error) {
+      console.error('Error fetching chapter total:', error);
+      return 0;
+    }
+  },
+
   async getTagId(tagName: string): Promise<string | null> {
     await this._loadTags();
     const normalized = tagName.toLowerCase();
     if (normalized === 'gl') return this._tagCache?.['girls\' love'] || null;
     if (normalized === 'bl') return this._tagCache?.['boys\' love'] || null;
+    if (normalized === 'genderswap') return this._tagCache?.['genderswap'] || this._tagCache?.['gender swap'] || null;
+    if (normalized === 'post-apocalypt...') return this._tagCache?.['post-apocalyptic'] || null;
+    if (normalized === 'traditional ga...') return this._tagCache?.['traditional games'] || null;
+    if (normalized === 'boys love') return this._tagCache?.['boys\' love'] || null;
+    if (normalized === 'girls love') return this._tagCache?.['girls\' love'] || null;
     return this._tagCache?.[normalized] || null;
   },
 

@@ -46,6 +46,7 @@ A comprehensive Manga and Manhwa reader web application that aggregates content 
 - Image proxy server to bypass CDN restrictions
 - Firebase-backed user library and search caching
 - Chapter reader with multiple source fallbacks
+- Advanced MangaDex search filters including expanded genre/theme/format tags, author/artist lookup, release year, and minimum chapter count
 
 ## MangaHere Integration Notes
 

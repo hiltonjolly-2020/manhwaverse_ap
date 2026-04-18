@@ -13,11 +13,18 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 
 const GENRES = [
-  'Action', 'Fantasy', 'Romance', 'Isekai', 'Leveling', 'Comedy', 'Drama', 
-  'Supernatural', 'Martial Arts', 'Adventure', 'Sci-Fi', 'Horror', 'Mystery', 
-  'Psychological', 'Slice of Life', 'Sports', 'Smut', 'Ecchi', 'Harem', 
-  'Historical', 'Mecha', 'Music', 'Reincarnation', 'School Life', 'Thriller', 'Tragedy',
-  'Adult', 'Erotica', 'GL', 'BL'
+  'Action', 'Adult', 'Adventure', 'Boys Love', 'Comedy', 'Crime', 'Drama', 'Ecchi', 'Erotica',
+  'Fantasy', 'Girls Love', 'Hentai', 'Historical', 'Horror', 'Isekai', 'Magical Girls',
+  'Mature', 'Mecha', 'Medical', 'Mystery', 'Philosophical', 'Psychological', 'Romance',
+  'Sci-Fi', 'Slice of Life', 'Smut', 'Sports', 'Superhero', 'Thriller', 'Tragedy', 'Wuxia',
+  'Aliens', 'Animals', 'Cooking', 'Crossdressing', 'Delinquents', 'Demons', 'Genderswap',
+  'Ghosts', 'Gore', 'Gyaru', 'Harem', 'Incest', 'Loli', 'Mafia', 'Magic', 'Mahjong', 'Martial Arts',
+  'Military', 'Monster Girls', 'Monsters', 'Music', 'Ninja', 'Office Workers', 'Police',
+  'Post-Apocalyptic', 'Reincarnation', 'Reverse Harem', 'Samurai', 'School Life', 'Sexual Violence', 'Shota',
+  'Supernatural', 'Survival', 'Time Travel', 'Traditional Games', 'Vampires', 'Video Games',
+  'Villainess', 'Virtual Reality', 'Zombies', '4-Koma', 'Adaptation', 'Anthology',
+  'Award Winning', 'Doujinshi', 'Fan Colored', 'Full Color', 'Long Strip', 'Official Colored',
+  'Oneshot', 'Self-Published', 'Web Comic', 'Leveling', 'GL', 'BL'
 ];
 
 const DEMOGRAPHICS = ['shounen', 'shoujo', 'seinen', 'josei'];
@@ -33,7 +40,9 @@ const CONTENT_RATING_GENRES: Record<string, string> = {
   Adult: 'pornographic',
   Erotica: 'erotica',
   Smut: 'erotica',
-  Ecchi: 'suggestive'
+  Ecchi: 'suggestive',
+  Hentai: 'pornographic',
+  Mature: 'erotica'
 };
 
 const KEYWORD_GENRES = ['Leveling'];
@@ -58,6 +67,9 @@ export default function SearchPage() {
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [selectedYear, setSelectedYear] = useState<string | null>(null);
+  const [authorQuery, setAuthorQuery] = useState('');
+  const [artistQuery, setArtistQuery] = useState('');
+  const [minimumChapters, setMinimumChapters] = useState('');
   const [tagMode, setTagMode] = useState<'AND' | 'OR'>('AND');
   
   const [sortBy, setSortBy] = useState(searchParams.get('sort') || 'relevance');
@@ -128,6 +140,9 @@ export default function SearchPage() {
         ? Array.from(new Set([...filteredTagIds, queryGenreTagId].filter(Boolean) as string[]))
         : filteredTagIds;
 
+      const authorIds = authorQuery.trim() ? await mangaService.getCreatorIds(authorQuery) : undefined;
+      const artistIds = artistQuery.trim() ? await mangaService.getCreatorIds(artistQuery) : undefined;
+
       const data = await mangaService.searchManga(
         finalTitle, 
         resultsPerPage, 
@@ -141,7 +156,9 @@ export default function SearchPage() {
         tagMode,
         filteredExcludedTagIds,
         contentRatings,
-        originalLanguages
+        originalLanguages,
+        authorIds,
+        artistIds
       );
       let filteredData = data;
       if (selectedType === 'others') {
@@ -149,6 +166,18 @@ export default function SearchPage() {
           const language = manga.originalLanguage || manga.language || manga.attributes?.originalLanguage;
           return language ? !['ko', 'ja', 'zh', 'zh-hk'].includes(language) : true;
         });
+      }
+      const minimumChapterCount = parseInt(minimumChapters, 10);
+      if (!Number.isNaN(minimumChapterCount) && minimumChapterCount > 0) {
+        const chapterCounts = await Promise.all(
+          filteredData.map(async (manga) => ({
+            manga,
+            total: await mangaService.getChapterTotal(manga.id)
+          }))
+        );
+        filteredData = chapterCounts
+          .filter(({ total }) => total >= minimumChapterCount)
+          .map(({ manga }) => manga);
       }
       setResults(filteredData);
     } catch (error) {
@@ -173,7 +202,7 @@ export default function SearchPage() {
 
   useEffect(() => {
     performSearch();
-  }, [searchParams, sortBy, selectedGenres, excludedGenres, selectedGroup, selectedDemographic, selectedStatus, selectedType, selectedYear, tagMode, page]);
+  }, [searchParams, sortBy, selectedGenres, excludedGenres, selectedGroup, selectedDemographic, selectedStatus, selectedType, selectedYear, authorQuery, artistQuery, minimumChapters, tagMode, page]);
 
   const clearFilters = () => {
     setSelectedGenres([]);
@@ -183,6 +212,9 @@ export default function SearchPage() {
     setSelectedStatus(null);
     setSelectedType(null);
     setSelectedYear(null);
+    setAuthorQuery('');
+    setArtistQuery('');
+    setMinimumChapters('');
     setTagMode('AND');
     setQuery('');
     setPage(0);
@@ -308,6 +340,53 @@ export default function SearchPage() {
                   </Select>
                 </div>
 
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Release Year</label>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="1900"
+                    max={new Date().getFullYear()}
+                    placeholder="Any year"
+                    className="bg-[#1A1D23] border-[#2D333B] h-12 rounded-xl text-zinc-200 focus:border-[#4FD1C5]/50 focus:ring-[#4FD1C5]/20"
+                    value={selectedYear || ''}
+                    onChange={(e) => setSelectedYear(e.target.value || null)}
+                  />
+                </div>
+
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Author</label>
+                  <Input
+                    placeholder="Any author"
+                    className="bg-[#1A1D23] border-[#2D333B] h-12 rounded-xl text-zinc-200 focus:border-[#4FD1C5]/50 focus:ring-[#4FD1C5]/20"
+                    value={authorQuery}
+                    onChange={(e) => setAuthorQuery(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Artist</label>
+                  <Input
+                    placeholder="Any artist"
+                    className="bg-[#1A1D23] border-[#2D333B] h-12 rounded-xl text-zinc-200 focus:border-[#4FD1C5]/50 focus:ring-[#4FD1C5]/20"
+                    value={artistQuery}
+                    onChange={(e) => setArtistQuery(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Minimum Chapters</label>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    placeholder="Any amount"
+                    className="bg-[#1A1D23] border-[#2D333B] h-12 rounded-xl text-zinc-200 focus:border-[#4FD1C5]/50 focus:ring-[#4FD1C5]/20"
+                    value={minimumChapters}
+                    onChange={(e) => setMinimumChapters(e.target.value)}
+                  />
+                </div>
+
                 <div className="space-y-4 md:col-span-3">
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
@@ -420,7 +499,7 @@ export default function SearchPage() {
               </Button>
             </div>
           </>
-        ) : (query || selectedGenres.length > 0 || excludedGenres.length > 0 || selectedGroup || selectedDemographic || selectedStatus || selectedType || selectedYear) && !loading ? (
+        ) : (query || selectedGenres.length > 0 || excludedGenres.length > 0 || selectedGroup || selectedDemographic || selectedStatus || selectedType || selectedYear || authorQuery || artistQuery || minimumChapters) && !loading ? (
           <div className="col-span-full py-20 text-center space-y-6">
             <div className="w-20 h-20 bg-zinc-900 rounded-full flex items-center justify-center mx-auto border border-zinc-800">
               <SearchIcon className="w-10 h-10 text-zinc-700" />
