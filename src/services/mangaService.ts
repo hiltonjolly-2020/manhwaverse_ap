@@ -154,13 +154,13 @@ export const mangaService = {
   async getTagId(tagName: string): Promise<string | null> {
     await this._loadTags();
     const normalized = tagName.toLowerCase();
-    if (normalized === 'gl') return this._tagCache?.['girls\' love'] || null;
-    if (normalized === 'bl') return this._tagCache?.['boys\' love'] || null;
+    if (normalized === 'gl') return this._tagCache?.["girls' love"] || null;
+    if (normalized === 'bl') return this._tagCache?.["boys' love"] || null;
     if (normalized === 'genderswap') return this._tagCache?.['genderswap'] || this._tagCache?.['gender swap'] || null;
-    if (normalized === 'post-apocalypt...') return this._tagCache?.['post-apocalyptic'] || null;
-    if (normalized === 'traditional ga...') return this._tagCache?.['traditional games'] || null;
-    if (normalized === 'boys love') return this._tagCache?.['boys\' love'] || null;
-    if (normalized === 'girls love') return this._tagCache?.['girls\' love'] || null;
+    if (normalized === 'post-apocalyptic') return this._tagCache?.['post-apocalyptic'] || null;
+    if (normalized === 'traditional games') return this._tagCache?.['traditional games'] || null;
+    if (normalized === 'boys love') return this._tagCache?.["boys' love"] || null;
+    if (normalized === 'girls love') return this._tagCache?.["girls' love"] || null;
     return this._tagCache?.[normalized] || null;
   },
 

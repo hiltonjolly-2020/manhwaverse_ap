@@ -12,7 +12,7 @@ export default defineConfig(() => {
       },
     },
     server: {
-      allowedHosts: true,
+      allowedHosts: true as const,
       host: '0.0.0.0',
       port: 5000,
       strictPort: true,

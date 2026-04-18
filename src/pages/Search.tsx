@@ -62,7 +62,7 @@ export default function SearchPage() {
   
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [excludedGenres, setExcludedGenres] = useState<string[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
+  const [groupQuery, setGroupQuery] = useState('');
   const [selectedDemographic, setSelectedDemographic] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -71,6 +71,26 @@ export default function SearchPage() {
   const [artistQuery, setArtistQuery] = useState('');
   const [minimumChapters, setMinimumChapters] = useState('');
   const [tagMode, setTagMode] = useState<'AND' | 'OR'>('AND');
+
+  // Debounced values for text inputs — avoids searching on every keystroke
+  const [debouncedAuthor, setDebouncedAuthor] = useState('');
+  const [debouncedArtist, setDebouncedArtist] = useState('');
+  const [debouncedGroup, setDebouncedGroup] = useState('');
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedAuthor(authorQuery), 600);
+    return () => clearTimeout(t);
+  }, [authorQuery]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedArtist(artistQuery), 600);
+    return () => clearTimeout(t);
+  }, [artistQuery]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedGroup(groupQuery), 600);
+    return () => clearTimeout(t);
+  }, [groupQuery]);
   
   const [sortBy, setSortBy] = useState(searchParams.get('sort') || 'relevance');
   const [page, setPage] = useState(0);
@@ -99,8 +119,8 @@ export default function SearchPage() {
       const filteredExcludedTagIds = excludedTagIds.filter((id): id is string => id !== null);
 
       let groupId = null;
-      if (selectedGroup) {
-        groupId = await mangaService.getGroupId(selectedGroup);
+      if (debouncedGroup.trim()) {
+        groupId = await mangaService.getGroupId(debouncedGroup.trim());
       }
 
       const appliedQuery = searchParams.get('q') || '';
@@ -140,8 +160,8 @@ export default function SearchPage() {
         ? Array.from(new Set([...filteredTagIds, queryGenreTagId].filter(Boolean) as string[]))
         : filteredTagIds;
 
-      const authorIds = authorQuery.trim() ? await mangaService.getCreatorIds(authorQuery) : undefined;
-      const artistIds = artistQuery.trim() ? await mangaService.getCreatorIds(artistQuery) : undefined;
+      const authorIds = debouncedAuthor.trim() ? await mangaService.getCreatorIds(debouncedAuthor) : undefined;
+      const artistIds = debouncedArtist.trim() ? await mangaService.getCreatorIds(debouncedArtist) : undefined;
 
       const data = await mangaService.searchManga(
         finalTitle, 
@@ -202,12 +222,12 @@ export default function SearchPage() {
 
   useEffect(() => {
     performSearch();
-  }, [searchParams, sortBy, selectedGenres, excludedGenres, selectedGroup, selectedDemographic, selectedStatus, selectedType, selectedYear, authorQuery, artistQuery, minimumChapters, tagMode, page]);
+  }, [searchParams, sortBy, selectedGenres, excludedGenres, debouncedGroup, selectedDemographic, selectedStatus, selectedType, selectedYear, debouncedAuthor, debouncedArtist, minimumChapters, tagMode, page]);
 
   const clearFilters = () => {
     setSelectedGenres([]);
     setExcludedGenres([]);
-    setSelectedGroup(null);
+    setGroupQuery('');
     setSelectedDemographic(null);
     setSelectedStatus(null);
     setSelectedType(null);
@@ -375,6 +395,16 @@ export default function SearchPage() {
                 </div>
 
                 <div className="space-y-4">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Scanlation Group</label>
+                  <Input
+                    placeholder="Any group"
+                    className="bg-[#1A1D23] border-[#2D333B] h-12 rounded-xl text-zinc-200 focus:border-[#4FD1C5]/50 focus:ring-[#4FD1C5]/20"
+                    value={groupQuery}
+                    onChange={(e) => setGroupQuery(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-4">
                   <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Minimum Chapters</label>
                   <Input
                     type="number"
@@ -499,7 +529,7 @@ export default function SearchPage() {
               </Button>
             </div>
           </>
-        ) : (query || selectedGenres.length > 0 || excludedGenres.length > 0 || selectedGroup || selectedDemographic || selectedStatus || selectedType || selectedYear || authorQuery || artistQuery || minimumChapters) && !loading ? (
+        ) : (query || selectedGenres.length > 0 || excludedGenres.length > 0 || groupQuery || selectedDemographic || selectedStatus || selectedType || selectedYear || authorQuery || artistQuery || minimumChapters) && !loading ? (
           <div className="col-span-full py-20 text-center space-y-6">
             <div className="w-20 h-20 bg-zinc-900 rounded-full flex items-center justify-center mx-auto border border-zinc-800">
               <SearchIcon className="w-10 h-10 text-zinc-700" />
